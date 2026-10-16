@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout project
@@ -36,7 +36,7 @@ jobs:
             throw "Godot executable not found."
           }
 
-          Copy-Item $godotFile.FullName "./godot.exe"
+          Copy-Item $godotFile.FullName "./godot.exe" -Force
 
       - name: Install Windows export templates
         shell: pwsh
@@ -45,7 +45,7 @@ jobs:
           $base = "https://github.com/godotengine/godot/releases/download/4.4.1-stable"
 
           Invoke-WebRequest "$base/Godot_v4.4.1-stable_export_templates.tpz" -OutFile templates.tpz
-          Copy-Item templates.tpz templates.zip
+          Copy-Item templates.tpz templates.zip -Force
           Expand-Archive templates.zip -DestinationPath templates-package -Force
 
           $releaseTemplate = Get-ChildItem templates-package -Recurse -File |
@@ -56,19 +56,32 @@ jobs:
             throw "Windows release export template was not found."
           }
 
-          $templateDir = Join-Path $env:APPDATA "Godot/export_templates/4.4.1.stable"
+          $templateDir = Join-Path $env:APPDATA "Godot\export_templates\4.4.1.stable"
           New-Item -ItemType Directory -Force -Path $templateDir | Out-Null
 
-          Copy-Item "$($releaseTemplate.DirectoryName)/*" $templateDir -Recurse -Force
+          Copy-Item "$($releaseTemplate.DirectoryName)\*" $templateDir -Recurse -Force
 
-          if (-not (Test-Path "$templateDir/windows_release_x86_64.exe")) {
-            throw "Could not install Windows export template."
+          if (-not (Test-Path "$templateDir\windows_release_x86_64.exe")) {
+            throw "Windows export template installation failed."
           }
 
-      - name: Configure Windows export
+      - name: Prepare project
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          $requiredFiles = @(
+            "project.godot",
+            "scenes/main.tscn",
+            "scripts/main.gd",
+            "scripts/player.gd"
+          )
+
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path $file)) {
+              throw "Required project file is missing: $file"
+            }
+          }
 
           @'
           [preset.0]
@@ -98,37 +111,32 @@ jobs:
           texture_format/s3tc=false
           texture_format/etc=false
           texture_format/etc2=false
-          '@ | Set-Content export_presets.cfg -Encoding ascii
+          '@ | Set-Content "export_presets.cfg" -Encoding ascii
 
-          if (-not (Test-Path "project.godot")) {
-            throw "project.godot is missing from the repository root."
-          }
-
-      - name: Import project
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & "./godot.exe" --headless --editor --path "." --import
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Godot project import failed."
-          }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
 
       - name: Export Windows game
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path build | Out-Null
 
-          & "./godot.exe" --headless --verbose --path "." --export-release "Windows Desktop" "build/DanielHills.exe"
+          & "./godot.exe" `
+            --headless `
+            --verbose `
+            --log-file "godot-export.log" `
+            --path "." `
+            --export-release "Windows Desktop" "build/DanielHills.exe"
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Godot Windows export failed."
-          }
+          $result = $LASTEXITCODE
 
-          if (-not (Test-Path "build/DanielHills.exe")) {
-            Get-ChildItem build -Force
-            throw "The EXE was not created."
+          if ($result -ne 0 -or -not (Test-Path "build/DanielHills.exe")) {
+            Write-Host "Godot export failed. Log follows:"
+
+            if (Test-Path "godot-export.log") {
+              Get-Content "godot-export.log"
+            }
+
+            throw "Failed to create build/DanielHills.exe. Exit code: $result"
           }
 
           Get-Item "build/DanielHills.exe" |
@@ -141,3 +149,12 @@ jobs:
           path: build/DanielHills.exe
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload error log if export fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Daniel-Hills-Build-Logs
+          path: godot-export.log
+          if-no-files-found: ignore
+          retention-days: 7
