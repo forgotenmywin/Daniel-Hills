@@ -1,87 +1,50 @@
-
-name: Build Daniel Hills for Windows
+name: Build Daniel Hills Windows ZIP
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-
-permissions:
-  contents: read
+    branches: [ main, master ]
 
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
-
     steps:
-      - name: Checkout project
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Download Godot
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $base = "https://github.com/godotengine/godot/releases/download/4.4.1-stable"
+          Invoke-WebRequest `
+            -Uri "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_win64.exe.zip" `
+            -OutFile "$env:RUNNER_TEMP/godot.zip"
+          Expand-Archive "$env:RUNNER_TEMP/godot.zip" "$env:RUNNER_TEMP/godot" -Force
+          $godot = Get-ChildItem "$env:RUNNER_TEMP/godot" -Filter "*.exe" | Select-Object -First 1
+          if (-not $godot) { throw "Godot executable not found after extraction." }
+          "GODOT_EXE=$($godot.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          Invoke-WebRequest "$base/Godot_v4.4.1-stable_win64.exe.zip" -OutFile godot.zip
-          Expand-Archive godot.zip -DestinationPath godot-package -Force
-
-          $godotFile = Get-ChildItem godot-package -Recurse -File |
-            Where-Object { $_.Name -eq "Godot_v4.4.1-stable_win64.exe" } |
-            Select-Object -First 1
-
-          if (-not $godotFile) {
-            throw "Godot executable not found."
-          }
-
-          Copy-Item $godotFile.FullName "./godot.exe" -Force
-
-      - name: Install Windows export templates
+      - name: Download export templates
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $base = "https://github.com/godotengine/godot/releases/download/4.4.1-stable"
-
-          Invoke-WebRequest "$base/Godot_v4.4.1-stable_export_templates.tpz" -OutFile templates.tpz
-          Copy-Item templates.tpz templates.zip -Force
-          Expand-Archive templates.zip -DestinationPath templates-package -Force
-
-          $releaseTemplate = Get-ChildItem templates-package -Recurse -File |
-            Where-Object { $_.Name -eq "windows_release_x86_64.exe" } |
-            Select-Object -First 1
-
-          if (-not $releaseTemplate) {
-            throw "Windows release export template was not found."
+          Invoke-WebRequest `
+            -Uri "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz" `
+            -OutFile "$env:RUNNER_TEMP/templates.tpz"
+          New-Item -ItemType Directory -Force "$env:APPDATA/Godot" | Out-Null
+          New-Item -ItemType Directory -Force "$env:APPDATA/Godot/export_templates/4.4.1.stable" | Out-Null
+          Expand-Archive "$env:RUNNER_TEMP/templates.tpz" "$env:RUNNER_TEMP/templates" -Force
+          $templateDir = Get-ChildItem "$env:RUNNER_TEMP/templates" -Directory -Recurse |
+            Where-Object { $_.Name -eq "templates" } | Select-Object -First 1
+          if ($templateDir) {
+            Copy-Item "$($templateDir.FullName)/*" "$env:APPDATA/Godot/export_templates/4.4.1.stable/" -Recurse -Force
+          } else {
+            Copy-Item "$env:RUNNER_TEMP/templates/*" "$env:APPDATA/Godot/export_templates/4.4.1.stable/" -Recurse -Force
           }
 
-          $templateDir = Join-Path $env:APPDATA "Godot\export_templates\4.4.1.stable"
-          New-Item -ItemType Directory -Force -Path $templateDir | Out-Null
-          Copy-Item "$($releaseTemplate.DirectoryName)\*" $templateDir -Recurse -Force
-
-          if (-not (Test-Path "$templateDir\windows_release_x86_64.exe")) {
-            throw "Windows export template installation failed."
-          }
-
-      - name: Prepare project
+      - name: Create export preset
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $requiredFiles = @(
-            "project.godot",
-            "scenes/main.tscn",
-            "scripts/main.gd",
-            "scripts/player.gd"
-          )
-
-          foreach ($file in $requiredFiles) {
-            if (-not (Test-Path $file)) {
-              throw "Required project file is missing: $file"
-            }
-          }
-
           @'
           [preset.0]
           name="Windows Desktop"
@@ -101,75 +64,35 @@ jobs:
           [preset.0.options]
           custom_template/debug=""
           custom_template/release=""
-          debug/export_console_wrapper=false
-          binary_format/architecture="x86_64"
+          debug/export_console_wrapper= false
+          binary_format/64_bits=true
           binary_format/embed_pck=true
           texture_format/bptc=false
-          texture_format/s3tc=false
+          texture_format/s3tc=true
           texture_format/etc=false
           texture_format/etc2=false
-          '@ | Set-Content "export_presets.cfg" -Encoding ascii
+          '@ | Set-Content -Path "export_presets.cfg" -Encoding utf8
 
-          New-Item -ItemType Directory -Force -Path build | Out-Null
-
-      - name: Export Windows game
+      - name: Import and export game
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force "build" | Out-Null
+          & "$env:GODOT_EXE" --headless --path "$PWD" --editor --quit
+          if ($LASTEXITCODE -ne 0) { throw "Godot import step failed with code $LASTEXITCODE" }
+          & "$env:GODOT_EXE" --headless --path "$PWD" --export-release "Windows Desktop" "build/DanielHills.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Godot export failed with code $LASTEXITCODE" }
+          if (-not (Test-Path "build/DanielHills.exe")) { throw "Export did not create DanielHills.exe" }
 
-          $godotPath = (Resolve-Path "./godot.exe").Path
-          $stdout = Join-Path $PWD "godot-stdout.log"
-          $stderr = Join-Path $PWD "godot-stderr.log"
+      - name: Zip Windows game
+        shell: pwsh
+        run: |
+          Copy-Item "project.godot" "build/project.godot"
+          Compress-Archive -Path "build/*" -DestinationPath "DanielHills-Windows.zip" -Force
 
-          $arguments = '--headless --verbose --log-file "godot-export.log" --path "." --export-release "Windows Desktop" "build/DanielHills.exe"'
-
-          Write-Host "Starting Godot export and waiting for completion..."
-
-          $process = Start-Process `
-            -FilePath $godotPath `
-            -ArgumentList $arguments `
-            -Wait `
-            -PassThru `
-            -RedirectStandardOutput $stdout `
-            -RedirectStandardError $stderr
-
-          $exitCode = $process.ExitCode
-          Write-Host "Godot process exit code: $exitCode"
-
-          foreach ($log in @($stdout, $stderr, (Join-Path $PWD "godot-export.log"))) {
-            if (Test-Path $log) {
-              Write-Host "========== $log =========="
-              Get-Content $log
-            }
-          }
-
-          if ($exitCode -ne 0) {
-            throw "Godot export process failed with exit code $exitCode."
-          }
-
-          if (-not (Test-Path "build/DanielHills.exe")) {
-            throw "Godot exited but build/DanielHills.exe was not created."
-          }
-
-          Get-Item "build/DanielHills.exe" |
-            Select-Object FullName, Length
-
-      - name: Upload Windows game
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Daniel-Hills-Windows-Prototype
-          path: build/DanielHills.exe
+          name: DanielHills-Windows
+          path: DanielHills-Windows.zip
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload diagnostic logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Daniel-Hills-Build-Logs
-          path: |
-            godot-export.log
-            godot-stdout.log
-            godot-stderr.log
-          if-no-files-found: ignore
-          retention-days: 7
