@@ -1,0 +1,66 @@
+name: Build Daniel Hills for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '**.gd'
+      - '**.tscn'
+      - 'project.godot'
+      - 'export_presets.cfg'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Download Godot 4.4.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = "https://github.com/godotengine/godot/releases/download/4.4.1-stable"
+          Invoke-WebRequest "$base/Godot_v4.4.1-stable_win64.exe.zip" -OutFile godot.zip
+          Expand-Archive godot.zip -DestinationPath godot -Force
+          $exe = Get-ChildItem godot -Filter "Godot_v4.4.1-stable_win64.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Godot console executable not found" }
+          Copy-Item $exe.FullName godot.exe
+
+          Invoke-WebRequest "$base/Godot_v4.4.1-stable_export_templates.tpz" -OutFile templates.tpz
+          Copy-Item templates.tpz templates.zip
+          Expand-Archive templates.zip -DestinationPath templates -Force
+          $templateDir = Join-Path $env:APPDATA "Godot\export_templates\4.4.1.stable"
+          New-Item -ItemType Directory -Force -Path $templateDir | Out-Null
+          $source = Get-ChildItem templates -Recurse -Directory | Where-Object { $_.Name -eq "templates" } | Select-Object -First 1
+          if ($source) {
+            Copy-Item "$($source.FullName)\*" $templateDir -Recurse -Force
+          } else {
+            Copy-Item "templates\*" $templateDir -Recurse -Force
+          }
+
+      - name: Import project
+        shell: pwsh
+        run: |
+          .\godot.exe --headless --editor --path . --import
+
+      - name: Export Windows game
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          .\godot.exe --headless --path . --export-release "Windows Desktop" "build/DanielHills.exe"
+
+      - name: Upload game
+        uses: actions/upload-artifact@v4
+        with:
+          name: Daniel-Hills-Windows-Prototype
+          path: build/
+          if-no-files-found: error
+          retention-days: 14
