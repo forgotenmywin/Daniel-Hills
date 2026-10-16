@@ -1,15 +1,11 @@
+
 name: Build Daniel Hills for Windows
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - '**.gd'
-      - '**.tscn'
-      - 'project.godot'
-      - 'export_presets.cfg'
-      - '.github/workflows/build.yml'
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -17,50 +13,131 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Download Godot 4.4.1
+      - name: Download Godot
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $base = "https://github.com/godotengine/godot/releases/download/4.4.1-stable"
+
           Invoke-WebRequest "$base/Godot_v4.4.1-stable_win64.exe.zip" -OutFile godot.zip
-          Expand-Archive godot.zip -DestinationPath godot -Force
-          $exe = Get-ChildItem godot -Filter "Godot_v4.4.1-stable_win64.exe" | Select-Object -First 1
-          if (-not $exe) { throw "Godot console executable not found" }
-          Copy-Item $exe.FullName godot.exe
+          Expand-Archive godot.zip -DestinationPath godot-package -Force
+
+          $godotFile = Get-ChildItem godot-package -Recurse -File |
+            Where-Object { $_.Name -eq "Godot_v4.4.1-stable_win64.exe" } |
+            Select-Object -First 1
+
+          if (-not $godotFile) {
+            throw "Godot executable not found."
+          }
+
+          Copy-Item $godotFile.FullName "./godot.exe"
+
+      - name: Install Windows export templates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = "https://github.com/godotengine/godot/releases/download/4.4.1-stable"
 
           Invoke-WebRequest "$base/Godot_v4.4.1-stable_export_templates.tpz" -OutFile templates.tpz
           Copy-Item templates.tpz templates.zip
-          Expand-Archive templates.zip -DestinationPath templates -Force
-          $templateDir = Join-Path $env:APPDATA "Godot\export_templates\4.4.1.stable"
+          Expand-Archive templates.zip -DestinationPath templates-package -Force
+
+          $releaseTemplate = Get-ChildItem templates-package -Recurse -File |
+            Where-Object { $_.Name -eq "windows_release_x86_64.exe" } |
+            Select-Object -First 1
+
+          if (-not $releaseTemplate) {
+            throw "Windows release export template was not found."
+          }
+
+          $templateDir = Join-Path $env:APPDATA "Godot/export_templates/4.4.1.stable"
           New-Item -ItemType Directory -Force -Path $templateDir | Out-Null
-          $source = Get-ChildItem templates -Recurse -Directory | Where-Object { $_.Name -eq "templates" } | Select-Object -First 1
-          if ($source) {
-            Copy-Item "$($source.FullName)\*" $templateDir -Recurse -Force
-          } else {
-            Copy-Item "templates\*" $templateDir -Recurse -Force
+
+          Copy-Item "$($releaseTemplate.DirectoryName)/*" $templateDir -Recurse -Force
+
+          if (-not (Test-Path "$templateDir/windows_release_x86_64.exe")) {
+            throw "Could not install Windows export template."
+          }
+
+      - name: Configure Windows export
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          @'
+          [preset.0]
+
+          name="Windows Desktop"
+          platform="Windows Desktop"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/DanielHills.exe"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.0.options]
+
+          custom_template/debug=""
+          custom_template/release=""
+          debug/export_console_wrapper=false
+          binary_format/architecture="x86_64"
+          binary_format/embed_pck=true
+          texture_format/bptc=false
+          texture_format/s3tc=false
+          texture_format/etc=false
+          texture_format/etc2=false
+          '@ | Set-Content export_presets.cfg -Encoding ascii
+
+          if (-not (Test-Path "project.godot")) {
+            throw "project.godot is missing from the repository root."
           }
 
       - name: Import project
         shell: pwsh
         run: |
-          .\godot.exe --headless --editor --path . --import
+          $ErrorActionPreference = "Stop"
+          & "./godot.exe" --headless --editor --path "." --import
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Godot project import failed."
+          }
 
       - name: Export Windows game
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path build | Out-Null
-          .\godot.exe --headless --path . --export-release "Windows Desktop" "build/DanielHills.exe"
 
-      - name: Upload game
+          & "./godot.exe" --headless --verbose --path "." --export-release "Windows Desktop" "build/DanielHills.exe"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Godot Windows export failed."
+          }
+
+          if (-not (Test-Path "build/DanielHills.exe")) {
+            Get-ChildItem build -Force
+            throw "The EXE was not created."
+          }
+
+          Get-Item "build/DanielHills.exe" |
+            Select-Object FullName, Length
+
+      - name: Upload Windows game
         uses: actions/upload-artifact@v4
         with:
           name: Daniel-Hills-Windows-Prototype
-          path: build/
+          path: build/DanielHills.exe
           if-no-files-found: error
           retention-days: 14
