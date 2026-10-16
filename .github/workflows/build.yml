@@ -2,42 +2,34 @@ name: Build Daniel Hills Windows ZIP
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Download Godot
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest `
-            -Uri "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_win64.exe.zip" `
-            -OutFile "$env:RUNNER_TEMP/godot.zip"
+          Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_win64.exe.zip" -OutFile "$env:RUNNER_TEMP/godot.zip"
           Expand-Archive "$env:RUNNER_TEMP/godot.zip" "$env:RUNNER_TEMP/godot" -Force
           $godot = Get-ChildItem "$env:RUNNER_TEMP/godot" -Filter "*.exe" | Select-Object -First 1
-          if (-not $godot) { throw "Godot executable not found after extraction." }
+          if (-not $godot) { throw "Godot executable not found." }
           "GODOT_EXE=$($godot.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Download export templates
+      - name: Install export templates
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest `
-            -Uri "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz" `
-            -OutFile "$env:RUNNER_TEMP/templates.tpz"
-          New-Item -ItemType Directory -Force "$env:APPDATA/Godot" | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz" -OutFile "$env:RUNNER_TEMP/templates.tpz"
           New-Item -ItemType Directory -Force "$env:APPDATA/Godot/export_templates/4.4.1.stable" | Out-Null
           Expand-Archive "$env:RUNNER_TEMP/templates.tpz" "$env:RUNNER_TEMP/templates" -Force
-          $templateDir = Get-ChildItem "$env:RUNNER_TEMP/templates" -Directory -Recurse |
-            Where-Object { $_.Name -eq "templates" } | Select-Object -First 1
-          if ($templateDir) {
-            Copy-Item "$($templateDir.FullName)/*" "$env:APPDATA/Godot/export_templates/4.4.1.stable/" -Recurse -Force
+          $root = Get-ChildItem "$env:RUNNER_TEMP/templates" -Directory -Recurse | Where-Object { $_.Name -eq "templates" } | Select-Object -First 1
+          if ($root) {
+            Copy-Item "$($root.FullName)/*" "$env:APPDATA/Godot/export_templates/4.4.1.stable/" -Recurse -Force
           } else {
             Copy-Item "$env:RUNNER_TEMP/templates/*" "$env:APPDATA/Godot/export_templates/4.4.1.stable/" -Recurse -Force
           }
@@ -64,7 +56,7 @@ jobs:
           [preset.0.options]
           custom_template/debug=""
           custom_template/release=""
-          debug/export_console_wrapper= false
+          debug/export_console_wrapper=false
           binary_format/64_bits=true
           binary_format/embed_pck=true
           texture_format/bptc=false
@@ -84,13 +76,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Godot export failed with code $LASTEXITCODE" }
           if (-not (Test-Path "build/DanielHills.exe")) { throw "Export did not create DanielHills.exe" }
 
-      - name: Zip Windows game
+      - name: Package ZIP
         shell: pwsh
         run: |
           Copy-Item "project.godot" "build/project.godot"
           Compress-Archive -Path "build/*" -DestinationPath "DanielHills-Windows.zip" -Force
 
-      - name: Upload ZIP artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DanielHills-Windows
